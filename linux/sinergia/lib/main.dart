@@ -34,6 +34,7 @@ class _ChatServerScreenState extends State<ChatServerScreen> {
   HttpServer? _server;
   WebSocketChannel? _clientChannel;
   List<Map<String, dynamic>> _messages = [];
+  List<Map<String, dynamic>> _receivedFiles = []; // Track received files
   TextEditingController _messageController = TextEditingController();
   String _serverAddress = '';
   int _serverPort = 4074;
@@ -100,9 +101,6 @@ class _ChatServerScreenState extends State<ChatServerScreen> {
       process.stdout.transform(utf8.decoder).listen((data) {
         print('[mDNS] $data');
       });
-      // process.stderr.transform(utf8.decoder).listen((data) {
-      //   print('[mDNS ERROR] $data');
-      // });
     } catch (e) {
       print("Error starting avahi-publish-service: $e");
     }
@@ -112,7 +110,7 @@ class _ChatServerScreenState extends State<ChatServerScreen> {
     final channel = IOWebSocketChannel(webSocket);
     String? storedFingerprint;
     bool paired = false;
-    Timer? infoTimer; // 🕒 Timer for auto system info sending
+    Timer? infoTimer;
 
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -121,45 +119,34 @@ class _ChatServerScreenState extends State<ChatServerScreen> {
 
     channel.stream.listen(
       (data) async {
-        final message = jsonDecode(data);
+        try {
+          final message = jsonDecode(data);
+          print("📥 Received message: ${message.toString()}");
 
-        // Handle pairing first
-        if (message.containsKey('fingerprint')) {
-          final receivedFingerprint = message['fingerprint'];
-          print("📥 Received fingerprint: $receivedFingerprint");
+          // Handle pairing first
+          if (message.containsKey('fingerprint')) {
+            final receivedFingerprint = message['fingerprint'];
+            print("📥 Received fingerprint: $receivedFingerprint");
 
-          if (storedFingerprint == null ||
-              storedFingerprint == receivedFingerprint) {
-            if (storedFingerprint == null && receivedFingerprint != null) {
-              final prefs = await SharedPreferences.getInstance();
-              await prefs.setString('paired_fingerprint', receivedFingerprint);
-              print("✅ Fingerprint stored: $receivedFingerprint");
-            }
+            if (storedFingerprint == null ||
+                storedFingerprint == receivedFingerprint) {
+              if (storedFingerprint == null && receivedFingerprint != null) {
+                final prefs = await SharedPreferences.getInstance();
+                await prefs.setString('paired_fingerprint', receivedFingerprint);
+                print("✅ Fingerprint stored: $receivedFingerprint");
+              }
 
-            paired = true;
-            _clientChannel = channel;
-            setState(() {
-              _connectionStatus = 'Connected';
-            });
+              paired = true;
+              _clientChannel = channel;
+              setState(() {
+                _connectionStatus = 'Connected';
+              });
 
-            final systemInfo = await getSystemInfo();
-            final verificationMessage = jsonEncode({
-              'text': '[verified]',
-              'status': 'connected',
-              'sender': 'Linux',
-              'timestamp': DateTime.now().toIso8601String(),
-              'device_info': {
-                'device_name': Platform.localHostname,
-                'ip': _serverAddress,
-                ...systemInfo,
-              },
-            });
-            channel.sink.add(verificationMessage);
-
-            infoTimer = Timer.periodic(Duration(seconds: 1), (timer) async {
               final systemInfo = await getSystemInfo();
-              final updateMessage = jsonEncode({
-                'channel': 'system_info',
+              final verificationMessage = jsonEncode({
+                'text': '[verified]',
+                'status': 'connected',
+                'sender': 'Linux',
                 'timestamp': DateTime.now().toIso8601String(),
                 'device_info': {
                   'device_name': Platform.localHostname,
@@ -167,58 +154,170 @@ class _ChatServerScreenState extends State<ChatServerScreen> {
                   ...systemInfo,
                 },
               });
-              channel.sink.add(updateMessage);
+              channel.sink.add(verificationMessage);
+
+              infoTimer = Timer.periodic(Duration(seconds: 1), (timer) async {
+                final systemInfo = await getSystemInfo();
+                final updateMessage = jsonEncode({
+                  'channel': 'system_info',
+                  'timestamp': DateTime.now().toIso8601String(),
+                  'device_info': {
+                    'device_name': Platform.localHostname,
+                    'ip': _serverAddress,
+                    ...systemInfo,
+                  },
+                });
+                channel.sink.add(updateMessage);
+              });
+
+              return;
+            } else {
+              print("⚠️ Received unknown fingerprint: $receivedFingerprint");
+              webSocket.close();
+              return;
+            }
+          }
+
+          // Handle file transfer from Android client
+          if (message['channel'] == 'file_transfer' && paired) {
+            await _handleFileTransfer(message, channel);
+            return;
+          }
+
+          // Handle regular messages if needed
+          if (message.containsKey('text') && !message.containsKey('channel')) {
+            setState(() {
+              _messages.add({
+                'text': message['text'],
+                'sender': message['sender'] ?? 'Unknown',
+                'timestamp': DateTime.now(),
+              });
             });
-
-            return;
-          } else {
-            print("⚠️ Received unknown fingerprint: $receivedFingerprint");
-            webSocket.close(); // reject untrusted client
-            return;
-          }
-        }
-
-        // ✅ Now, after pairing: Handle file transfer (any message with channel)
-        if (message['channel'] == 'file_transfer') {
-          final filename = message['filename'];
-          final base64Data = message['data'];
-          final bytes = base64Decode(base64Data);
-
-          final homeDir = Platform.environment['HOME'] ?? '/home/username';
-          final saveDir = Directory('$homeDir/Downloads');
-
-          if (!await saveDir.exists()) {
-            await saveDir.create(recursive: true);
           }
 
-          final file = File('${saveDir.path}/$filename');
-          await file.writeAsBytes(bytes);
-          print('📁 File received and saved: ${file.path}');
-
-          // ✅ Send acknowledgment
-          final ack = jsonEncode({
-            'channel': 'file_ack',
-            'filename': filename,
-            'status': 'saved',
-          });
-          channel.sink.add(ack);
-          return;
+        } catch (e) {
+          print("❌ Error parsing message: $e");
+          print("Raw data: $data");
         }
       },
       onDone: () {
         infoTimer?.cancel();
+        setState(() {
+          _connectionStatus = 'Disconnected';
+          _clientChannel = null;
+        });
         print('WebSocket disconnected');
       },
       onError: (error) {
         infoTimer?.cancel();
+        setState(() {
+          _connectionStatus = 'Error: $error';
+          _clientChannel = null;
+        });
         print('WebSocket error: $error');
       },
     );
   }
 
+  Future<void> _handleFileTransfer(Map<String, dynamic> message, IOWebSocketChannel channel) async {
+    try {
+      final filename = message['filename'];
+      final base64Data = message['data'];
+      final sender = message['sender'] ?? 'Unknown';
+      final timestamp = message['timestamp'] ?? DateTime.now().toIso8601String();
+      final fileIndex = message['file_index'] ?? 0;
+
+      print("📁 Receiving file: $filename (index: $fileIndex)");
+
+      if (filename == null || base64Data == null) {
+        print("❌ Invalid file transfer message - missing filename or data");
+        _sendFileAck(channel, filename ?? 'unknown', 'error', 'Missing filename or data');
+        return;
+      }
+
+      // Decode base64 data
+      List<int> bytes;
+      try {
+        bytes = base64Decode(base64Data);
+      } catch (e) {
+        print("❌ Failed to decode base64 data: $e");
+        _sendFileAck(channel, filename, 'error', 'Failed to decode file data');
+        return;
+      }
+
+      // Determine save directory
+      final homeDir = Platform.environment['HOME'] ?? '/home/username';
+      final saveDir = Directory('$homeDir/Downloads');
+
+      if (!await saveDir.exists()) {
+        await saveDir.create(recursive: true);
+      }
+
+      // Handle filename conflicts
+      String finalFilename = filename;
+      File file = File('${saveDir.path}/$finalFilename');
+      int counter = 1;
+      
+      while (await file.exists()) {
+        final nameParts = filename.split('.');
+        if (nameParts.length > 1) {
+          final name = nameParts.sublist(0, nameParts.length - 1).join('.');
+          final extension = nameParts.last;
+          finalFilename = '${name}_$counter.$extension';
+        } else {
+          finalFilename = '${filename}_$counter';
+        }
+        file = File('${saveDir.path}/$finalFilename');
+        counter++;
+      }
+
+      // Save file
+      await file.writeAsBytes(bytes);
+      final fileSizeKB = (bytes.length / 1024).round();
+      
+      print('✅ File saved successfully: ${file.path} (${fileSizeKB}KB)');
+
+      // Update UI with received file info
+      setState(() {
+        _receivedFiles.add({
+          'filename': finalFilename,
+          'originalFilename': filename,
+          'sender': sender,
+          'timestamp': DateTime.parse(timestamp),
+          'path': file.path,
+          'size': fileSizeKB,
+          'fileIndex': fileIndex,
+        });
+      });
+
+      // Send success acknowledgment
+      _sendFileAck(channel, filename, 'success', 'File saved successfully');
+
+    } catch (e) {
+      print("❌ Error handling file transfer: $e");
+      _sendFileAck(channel, message['filename'] ?? 'unknown', 'error', 'Server error: $e');
+    }
+  }
+
+  void _sendFileAck(IOWebSocketChannel channel, String filename, String status, String message) {
+    try {
+      final ack = jsonEncode({
+        'channel': 'file_ack',
+        'filename': filename,
+        'status': status,
+        'message': message,
+        'timestamp': DateTime.now().toIso8601String(),
+      });
+      
+      channel.sink.add(ack);
+      print("📤 Sent file acknowledgment: $filename -> $status");
+    } catch (e) {
+      print("❌ Error sending file acknowledgment: $e");
+    }
+  }
+
   Future<Map<String, String>> getSystemInfo() async {
     // OS
-
     final osRelease = await Process.run('cat', ['/etc/os-release']);
     final osLines = osRelease.stdout.toString().split('\n');
 
@@ -235,28 +334,18 @@ class _ChatServerScreenState extends State<ChatServerScreen> {
     final osName = name.split('=').last.replaceAll('"', '');
     final osVersion = version.split('=').last.replaceAll('"', '');
     final os = "$osName $osVersion";
-    // print('OS: $osName $osVersion'); // Ubuntu 24.04
-    print(os);
-    // CPU usage (top -bn1)
-    // final cpuResult = await Process.run('sh', ['-c', "top -bn1 | grep '%Cpu'"]);
-    // final cpu = cpuResult.stdout.toString().split('\n').first.trim();
 
+    // CPU usage
     final cpuResult = await Process.run('sh', ['-c', "top -bn1 | grep '%Cpu'"]);
     final cpuLine = cpuResult.stdout.toString().trim();
 
     final cpuut = cpuLine
         .split(',')
-        .firstWhere((part) => part.contains('us'))
-        .replaceAll(RegExp(r'[^0-9.]'), ''); // Removes non-numeric characters
+        .firstWhere((part) => part.contains('us'), orElse: () => '0.0%')
+        .replaceAll(RegExp(r'[^0-9.]'), '');
     final cpu = "$cpuut %";
-    // print('CPU Usage: $cpuUsage%');
 
-    print(cpu);
-    // RAM usage (free -h)
-    // final ramResult = await Process.run('sh', ['-c', "free -h | grep Mem"]);
-    // final ramParts = ramResult.stdout.toString().split(RegExp(r'\s+'));
-    // final ram = '${ramParts[2]}/${ramParts[1]}';
-
+    // RAM usage
     final result = await Process.run('free', ['-b']);
     final lines = result.stdout.toString().split('\n');
     final memLine = lines.firstWhere((line) => line.startsWith('Mem:'));
@@ -267,22 +356,24 @@ class _ChatServerScreenState extends State<ChatServerScreen> {
 
     final percentUsed = (used / total) * 100;
     final ram = "${percentUsed.toStringAsFixed(1)}%";
-    // print('RAM: ${percentUsed.toStringAsFixed(1)}%');
-    print(ram);
-    // Battery (upower)
+
+    // Battery
     String battery = 'N/A';
-    final batteryResult = await Process.run('sh', [
-      '-c',
-      "upower -i \$(upower -e | grep BAT) | grep percentage | awk '{print \$2}'",
-    ]);
-    if (batteryResult.stdout.toString().trim().isNotEmpty) {
-      battery = batteryResult.stdout.toString().trim();
+    try {
+      final batteryResult = await Process.run('sh', [
+        '-c',
+        "upower -i \$(upower -e | grep BAT) | grep percentage | awk '{print \$2}'",
+      ]);
+      if (batteryResult.stdout.toString().trim().isNotEmpty) {
+        battery = batteryResult.stdout.toString().trim();
+      }
+    } catch (e) {
+      // Battery info not available
     }
 
     return {'os': os, 'cpu': cpu, 'ram': ram, 'battery': battery};
   }
 
-  // ------------------------------------
   void _sendMessage() {
     if (_messageController.text.isNotEmpty && _clientChannel != null) {
       final message = {
@@ -306,7 +397,7 @@ class _ChatServerScreenState extends State<ChatServerScreen> {
   }
 
   String _generateFingerprint(String deviceName) {
-    final id = "$deviceName"; // Optionally add MAC
+    final id = "$deviceName";
     final bytes = utf8.encode(id);
     return sha256.convert(bytes).toString();
   }
@@ -323,17 +414,26 @@ class _ChatServerScreenState extends State<ChatServerScreen> {
     });
   }
 
+  String _formatTime(DateTime time) {
+    return '${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')}';
+  }
+
+  String _formatFileSize(int sizeKB) {
+    if (sizeKB < 1024) {
+      return '${sizeKB}KB';
+    } else {
+      return '${(sizeKB / 1024).toStringAsFixed(1)}MB';
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      // appBar: AppBar(
-      //   title: Text('Linux Chat Server'),
-      //   backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-      // ),
       body: Padding(
         padding: const EdgeInsets.all(16.0),
         child: Row(
           children: [
+            // Left side - QR Code
             Expanded(
               flex: 1,
               child: Column(
@@ -365,6 +465,14 @@ class _ChatServerScreenState extends State<ChatServerScreen> {
                           SizedBox(height: 20),
                           Text('Server: $_serverAddress:$_serverPort'),
                           Text('Status: $_connectionStatus'),
+                          SizedBox(height: 10),
+                          Text(
+                            'Files Received: ${_receivedFiles.length}',
+                            style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              color: Colors.green,
+                            ),
+                          ),
                         ],
                       ),
                     ),
@@ -373,104 +481,102 @@ class _ChatServerScreenState extends State<ChatServerScreen> {
               ),
             ),
 
-            //chat app for testing websocket is working or not
-            // Expanded(
-            //   flex: 2,
-            //   child: Column(
-            //     children: [
-            //       Expanded(
-            //         child: Card(
-            //           child: ListView.builder(
-            //             padding: EdgeInsets.all(8),
-            //             itemCount: _messages.length,
-            //             itemBuilder: (context, index) {
-            //               final message = _messages[index];
-            //               final isFromLinux = message['sender'] == 'Linux';
-
-            //               return Align(
-            //                 alignment:
-            //                     isFromLinux
-            //                         ? Alignment.centerRight
-            //                         : Alignment.centerLeft,
-            //                 child: Container(
-            //                   margin: EdgeInsets.symmetric(vertical: 4),
-            //                   padding: EdgeInsets.all(12),
-            //                   decoration: BoxDecoration(
-            //                     color:
-            //                         isFromLinux
-            //                             ? Colors.blue.shade100
-            //                             : Colors.grey.shade200,
-            //                     borderRadius: BorderRadius.circular(12),
-            //                   ),
-            //                   child: Column(
-            //                     crossAxisAlignment: CrossAxisAlignment.start,
-            //                     children: [
-            //                       Text(
-            //                         message['text'],
-            //                         style: TextStyle(fontSize: 16),
-            //                       ),
-            //                       SizedBox(height: 4),
-            //                       Text(
-            //                         '${message['sender']} • ${_formatTime(message['timestamp'])}',
-            //                         style: TextStyle(
-            //                           fontSize: 12,
-            //                           color: Colors.grey.shade600,
-            //                         ),
-            //                       ),
-            //                     ],
-            //                   ),
-            //                 ),
-            //               );
-            //             },
-            //           ),
-            //         ),
-            //       ),
-            //       Card(
-            //         child: Padding(
-            //           padding: const EdgeInsets.all(8.0),
-            //           child: Row(
-            //             children: [
-            //               Expanded(
-            //                 child: TextField(
-            //                   controller: _messageController,
-            //                   decoration: InputDecoration(
-            //                     hintText: 'Type your message...',
-            //                     border: OutlineInputBorder(
-            //                       borderRadius: BorderRadius.circular(20),
-            //                     ),
-            //                     contentPadding: EdgeInsets.symmetric(
-            //                       horizontal: 16,
-            //                       vertical: 8,
-            //                     ),
-            //                   ),
-            //                   onSubmitted: (_) => _sendMessage(),
-            //                 ),
-            //               ),
-            //               SizedBox(width: 8),
-            //               ElevatedButton(
-            //                 onPressed: _sendMessage,
-            //                 child: Icon(Icons.send),
-            //                 style: ElevatedButton.styleFrom(
-            //                   shape: CircleBorder(),
-            //                   padding: EdgeInsets.all(12),
-            //                 ),
-            //               ),
-            //             ],
-            //           ),
-            //         ),
-            //       ),
-            //     ],
-            //   ),
-            // ),
+            // Right side - Received Files List
+            Expanded(
+              flex: 2,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Received Files',
+                    style: Theme.of(context).textTheme.headlineSmall,
+                  ),
+                  SizedBox(height: 10),
+                  Expanded(
+                    child: Card(
+                      child: _receivedFiles.isEmpty
+                          ? Center(
+                              child: Column(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Icon(
+                                    Icons.file_download_outlined,
+                                    size: 64,
+                                    color: Colors.grey,
+                                  ),
+                                  SizedBox(height: 16),
+                                  Text(
+                                    'No files received yet',
+                                    style: TextStyle(
+                                      fontSize: 18,
+                                      color: Colors.grey,
+                                    ),
+                                  ),
+                                  SizedBox(height: 8),
+                                  Text(
+                                    'Files will appear here when sent from Android',
+                                    style: TextStyle(
+                                      fontSize: 14,
+                                      color: Colors.grey,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            )
+                          : ListView.builder(
+                              padding: EdgeInsets.all(8),
+                              itemCount: _receivedFiles.length,
+                              itemBuilder: (context, index) {
+                                final file = _receivedFiles[index];
+                                return Card(
+                                  margin: EdgeInsets.symmetric(vertical: 4),
+                                  child: ListTile(
+                                    leading: Icon(
+                                      Icons.insert_drive_file,
+                                      color: Colors.blue,
+                                    ),
+                                    title: Text(
+                                      file['filename'],
+                                      style: TextStyle(fontWeight: FontWeight.bold),
+                                    ),
+                                    subtitle: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Text('From: ${file['sender']}'),
+                                        Text('Size: ${_formatFileSize(file['size'])}'),
+                                        Text('Saved: ${_formatTime(file['timestamp'])}'),
+                                        Text(
+                                          'Path: ${file['path']}',
+                                          style: TextStyle(
+                                            fontSize: 12,
+                                            color: Colors.grey,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                    trailing: IconButton(
+                                      icon: Icon(Icons.folder_open),
+                                      onPressed: () {
+                                        // Open file location
+                                        Process.run('xdg-open', [
+                                          Directory(file['path']).parent.path
+                                        ]);
+                                      },
+                                    ),
+                                  ),
+                                );
+                              },
+                            ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
           ],
         ),
       ),
     );
   }
-
-  // String _formatTime(DateTime time) {
-  //   return '${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')}';
-  // }
 
   @override
   void dispose() {
