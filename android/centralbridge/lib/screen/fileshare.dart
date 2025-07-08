@@ -21,11 +21,11 @@ class _FileshareState extends State<Fileshare> {
   List<FileTransferStatus> _fileTransferStatus = [];
   int _currentFileIndex = 0;
   bool _isTransferring = false;
-  
+
   // Stream subscriptions
   StreamSubscription<Map<String, dynamic>>? _fileAckSubscription;
   StreamSubscription<String>? _connectionSubscription;
-  
+
   @override
   void initState() {
     super.initState();
@@ -35,17 +35,18 @@ class _FileshareState extends State<Fileshare> {
   void _setupStreamListeners() {
     // Listen to file transfer acknowledgments
     _fileAckSubscription = WebSocketManager.instance.listenToFileTransferAcks().listen(
-      (data) {
+          (data) {
+        print('📥 Received file ack: $data'); // Debug print
         _handleFileAcknowledgment(data);
       },
       onError: (error) {
         print('File ack stream error: $error');
       },
     );
-    
+
     // Listen to connection status
     _connectionSubscription = WebSocketManager.instance.connectionStream.listen(
-      (status) {
+          (status) {
         if (status == 'Disconnected' && _isTransferring) {
           // Handle disconnection during transfer
           setState(() {
@@ -65,28 +66,33 @@ class _FileshareState extends State<Fileshare> {
   void _handleFileAcknowledgment(Map<String, dynamic> data) {
     // Handle different types of file acknowledgments
     String? filename = data['filename'];
-    int? fileIndex = data['file_index'];
     String? status = data['status'];
-    
-    if (filename != null || fileIndex != null) {
+    String? message = data['message'];
+
+    print('🔍 Processing ack for: $filename, status: $status, message: $message');
+
+    if (filename != null && status != null) {
       setState(() {
-        // Find the file by index or filename
-        int targetIndex = -1;
-        if (fileIndex != null && fileIndex < _fileTransferStatus.length) {
-          targetIndex = fileIndex;
-        } else if (filename != null) {
-          targetIndex = _fileTransferStatus.indexWhere((f) => f.filename == filename);
-        }
-        
+        // Find the file by filename
+        int targetIndex = _fileTransferStatus.indexWhere((f) => f.filename == filename);
+
         if (targetIndex >= 0) {
-          if (status == 'received' || status == 'success') {
+          print('📊 Updating status for file at index $targetIndex: $filename -> $status');
+
+          if (status == 'success') {
             _fileTransferStatus[targetIndex].status = TransferStatus.completed;
             _fileTransferStatus[targetIndex].progress = 1.0;
-          } else if (status == 'error' || status == 'failed') {
+            print('✅ File $filename marked as completed');
+          } else if (status == 'error') {
             _fileTransferStatus[targetIndex].status = TransferStatus.error;
+            print('❌ File $filename marked as error: $message');
           }
+        } else {
+          print('⚠️ Could not find file $filename in transfer status list');
         }
       });
+    } else {
+      print('⚠️ Invalid acknowledgment data: missing filename or status');
     }
   }
 
@@ -140,9 +146,9 @@ class _FileshareState extends State<Fileshare> {
           });
           break;
         }
-        
+
         await _sendSingleFile(i);
-        
+
         // Small delay between files to prevent overwhelming the connection
         if (i < _selectedFiles.length - 1) {
           await Future.delayed(Duration(milliseconds: 500));
@@ -162,7 +168,7 @@ class _FileshareState extends State<Fileshare> {
 
   Future<void> _sendSingleFile(int index) async {
     final file = _selectedFiles[index];
-    
+
     try {
       final bytes = await file.readAsBytes();
       final base64Data = base64Encode(bytes);
@@ -185,19 +191,20 @@ class _FileshareState extends State<Fileshare> {
       };
 
       print("📤 Sending file ${index + 1}/${_selectedFiles.length}: $filename");
-      
+
       // Send via WebSocket manager
       WebSocketManager.instance.sendMessage(fileMessage);
 
-      // Set a timeout for acknowledgment
-      Timer(Duration(seconds: 30), () {
+      // Set a timeout for acknowledgment (increased to 60 seconds)
+      Timer(Duration(seconds: 60), () {
         if (_fileTransferStatus[index].status == TransferStatus.sending) {
           setState(() {
             _fileTransferStatus[index].status = TransferStatus.error;
           });
+          print('⏰ Timeout waiting for acknowledgment for file: $filename');
         }
       });
-      
+
     } catch (e) {
       print('Error sending file $index: $e');
       setState(() {
