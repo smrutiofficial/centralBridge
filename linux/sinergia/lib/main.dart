@@ -438,42 +438,48 @@ class _ChatServerScreenState extends State<ChatServerScreen> {
               flex: 1,
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.center,
+                mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  Card(
-                    child: Padding(
-                      padding: const EdgeInsets.all(16.0),
-                      child: Column(
-                        children: [
-                          Text(
-                            'Scan QR Code to Connect',
-                            style: Theme.of(context).textTheme.headlineSmall,
-                          ),
-                          SizedBox(height: 20),
-                          if (_isServerRunning)
-                            Container(
-                              padding: EdgeInsets.all(16),
-                              decoration: BoxDecoration(
-                                color: Colors.white,
-                                borderRadius: BorderRadius.circular(8),
-                              ),
-                              child: QrImageView(
-                                data: _getQRData(),
-                                version: QrVersions.auto,
-                                size: 200.0,
+                  Center(
+                    child: Card(
+                      child: Padding(
+                        padding: const EdgeInsets.all(16.0),
+                        child: Column(
+                          children: [
+                            Text(
+                              'Scan to Connect',
+                              style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                fontSize: 22,
                               ),
                             ),
-                          SizedBox(height: 20),
-                          Text('Server: $_serverAddress:$_serverPort'),
-                          Text('Status: $_connectionStatus'),
-                          SizedBox(height: 10),
-                          Text(
-                            'Files Received: ${_receivedFiles.length}',
-                            style: TextStyle(
-                              fontWeight: FontWeight.bold,
-                              color: Colors.green,
-                            ),
-                          ),
-                        ],
+                            SizedBox(height: 20),
+                            if (_isServerRunning)
+                              Container(
+                                padding: EdgeInsets.all(16),
+                                decoration: BoxDecoration(
+                                  color: Colors.white,
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                child: QrImageView(
+                                  data: _getQRData(),
+                                  version: QrVersions.auto,
+                                  size: 400.0,
+                                ),
+                              ),
+                            SizedBox(height: 20),
+                            Text('Server: $_serverAddress:$_serverPort'),
+                            Text('Status: $_connectionStatus'),
+                            // SizedBox(height: 10),
+                            // Text(
+                            //   'Files Received: ${_receivedFiles.length}',
+                            //   style: TextStyle(
+                            //     fontWeight: FontWeight.bold,
+                            //     color: Colors.green,
+                            //   ),
+                            // ),
+                          ],
+                        ),
                       ),
                     ),
                   ),
@@ -482,96 +488,96 @@ class _ChatServerScreenState extends State<ChatServerScreen> {
             ),
 
             // Right side - Received Files List
-            Expanded(
-              flex: 2,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'Received Files',
-                    style: Theme.of(context).textTheme.headlineSmall,
-                  ),
-                  SizedBox(height: 10),
-                  Expanded(
-                    child: Card(
-                      child: _receivedFiles.isEmpty
-                          ? Center(
-                              child: Column(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  Icon(
-                                    Icons.file_download_outlined,
-                                    size: 64,
-                                    color: Colors.grey,
-                                  ),
-                                  SizedBox(height: 16),
-                                  Text(
-                                    'No files received yet',
-                                    style: TextStyle(
-                                      fontSize: 18,
-                                      color: Colors.grey,
-                                    ),
-                                  ),
-                                  SizedBox(height: 8),
-                                  Text(
-                                    'Files will appear here when sent from Android',
-                                    style: TextStyle(
-                                      fontSize: 14,
-                                      color: Colors.grey,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            )
-                          : ListView.builder(
-                              padding: EdgeInsets.all(8),
-                              itemCount: _receivedFiles.length,
-                              itemBuilder: (context, index) {
-                                final file = _receivedFiles[index];
-                                return Card(
-                                  margin: EdgeInsets.symmetric(vertical: 4),
-                                  child: ListTile(
-                                    leading: Icon(
-                                      Icons.insert_drive_file,
-                                      color: Colors.blue,
-                                    ),
-                                    title: Text(
-                                      file['filename'],
-                                      style: TextStyle(fontWeight: FontWeight.bold),
-                                    ),
-                                    subtitle: Column(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
-                                      children: [
-                                        Text('From: ${file['sender']}'),
-                                        Text('Size: ${_formatFileSize(file['size'])}'),
-                                        Text('Saved: ${_formatTime(file['timestamp'])}'),
-                                        Text(
-                                          'Path: ${file['path']}',
-                                          style: TextStyle(
-                                            fontSize: 12,
-                                            color: Colors.grey,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                    trailing: IconButton(
-                                      icon: Icon(Icons.folder_open),
-                                      onPressed: () {
-                                        // Open file location
-                                        Process.run('xdg-open', [
-                                          Directory(file['path']).parent.path
-                                        ]);
-                                      },
-                                    ),
-                                  ),
-                                );
-                              },
-                            ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
+            // Expanded(
+            //   flex: 2,
+            //   child: Column(
+            //     crossAxisAlignment: CrossAxisAlignment.start,
+            //     children: [
+            //       Text(
+            //         'Received Files',
+            //         style: Theme.of(context).textTheme.headlineSmall,
+            //       ),
+            //       SizedBox(height: 10),
+            //       Expanded(
+            //         child: Card(
+            //           child: _receivedFiles.isEmpty
+            //               ? Center(
+            //                   child: Column(
+            //                     mainAxisAlignment: MainAxisAlignment.center,
+            //                     children: [
+            //                       Icon(
+            //                         Icons.file_download_outlined,
+            //                         size: 64,
+            //                         color: Colors.grey,
+            //                       ),
+            //                       SizedBox(height: 16),
+            //                       Text(
+            //                         'No files received yet',
+            //                         style: TextStyle(
+            //                           fontSize: 18,
+            //                           color: Colors.grey,
+            //                         ),
+            //                       ),
+            //                       SizedBox(height: 8),
+            //                       Text(
+            //                         'Files will appear here when sent from Android',
+            //                         style: TextStyle(
+            //                           fontSize: 14,
+            //                           color: Colors.grey,
+            //                         ),
+            //                       ),
+            //                     ],
+            //                   ),
+            //                 )
+            //               : ListView.builder(
+            //                   padding: EdgeInsets.all(8),
+            //                   itemCount: _receivedFiles.length,
+            //                   itemBuilder: (context, index) {
+            //                     final file = _receivedFiles[index];
+            //                     return Card(
+            //                       margin: EdgeInsets.symmetric(vertical: 4),
+            //                       child: ListTile(
+            //                         leading: Icon(
+            //                           Icons.insert_drive_file,
+            //                           color: Colors.blue,
+            //                         ),
+            //                         title: Text(
+            //                           file['filename'],
+            //                           style: TextStyle(fontWeight: FontWeight.bold),
+            //                         ),
+            //                         subtitle: Column(
+            //                           crossAxisAlignment: CrossAxisAlignment.start,
+            //                           children: [
+            //                             Text('From: ${file['sender']}'),
+            //                             Text('Size: ${_formatFileSize(file['size'])}'),
+            //                             Text('Saved: ${_formatTime(file['timestamp'])}'),
+            //                             Text(
+            //                               'Path: ${file['path']}',
+            //                               style: TextStyle(
+            //                                 fontSize: 12,
+            //                                 color: Colors.grey,
+            //                               ),
+            //                             ),
+            //                           ],
+            //                         ),
+            //                         trailing: IconButton(
+            //                           icon: Icon(Icons.folder_open),
+            //                           onPressed: () {
+            //                             // Open file location
+            //                             Process.run('xdg-open', [
+            //                               Directory(file['path']).parent.path
+            //                             ]);
+            //                           },
+            //                         ),
+            //                       ),
+            //                     );
+            //                   },
+            //                 ),
+            //         ),
+            //       ),
+            //     ],
+            //   ),
+            // ),
           ],
         ),
       ),

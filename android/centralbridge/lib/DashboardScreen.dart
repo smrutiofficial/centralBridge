@@ -9,6 +9,8 @@ import 'package:centralbridge/screen/castscreen.dart';
 import 'package:centralbridge/screen/clipboardsync.dart';
 import 'package:centralbridge/screen/fileshare.dart';
 import 'package:centralbridge/screen/remoteinput.dart';
+import 'package:centralbridge/battery.dart';
+
 
 class DashboardScreen extends StatefulWidget {
   final String serverUrl;
@@ -25,6 +27,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   late Map<String, dynamic> _deviceInfo;
   String connectionStatus = "Connecting...";
   String lastMessage = "";
+
 
   int _selectedIndex = 2;
 
@@ -148,7 +151,22 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
         actions: [
           Icon(Icons.ev_station,color: Color(0xff75a78e),),
-          Text('${info['battery'] ?? '-'}'),
+          SizedBox(width: 6),
+          Container(
+            decoration: BoxDecoration(
+              color: Color(0xff7777cd).withValues(alpha: 0.2),
+              borderRadius: BorderRadius.circular(7)
+            ),
+            padding: EdgeInsets.symmetric(vertical: 8,horizontal: 15),
+            child: Row(children: [
+            Icon(Icons.phone_android,size: 15,),
+              BatteryLevelWidget(),
+              SizedBox(width: 6),
+            Icon(Icons.computer,size: 15,),
+            Text('${info['battery'] ?? '-'}'),
+          ],),),
+
+
           IconButton(
             icon: Icon(Icons.settings),
             onPressed: () => Navigator.pop(context),

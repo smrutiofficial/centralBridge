@@ -17,6 +17,7 @@ class MyApp extends StatelessWidget {
     return MaterialApp(
       title: 'Android Chat Client',
       theme: ThemeData(primarySwatch: Colors.green),
+      debugShowCheckedModeBanner: false,
       home: DeviceDiscoveryScreen(),
     );
   }

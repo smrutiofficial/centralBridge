@@ -40,6 +40,7 @@ dependencies:
   shared_preferences: ^2.5.3
   multicast_dns: ^0.3.3
   file_picker: ^10.2.0
+  battery_plus: ^6.2.2
 
 dev_dependencies:
   flutter_test:
