@@ -454,7 +454,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   Icon(Icons.document_scanner,color: Colors.black.withValues(alpha: 0.6),),
                   SizedBox(width: 5,),
                   Text(
-                    "Scan Document",
+                    "Insert Document",
                     style: TextStyle(
                       fontWeight: FontWeight.w600,
                       fontSize: 16,
@@ -563,76 +563,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   _quickRun(Icons.logout, 'Logout', Colors.orange),
                 ],
               ),
-            ),
-            // Container(
-            //   margin: EdgeInsets.symmetric(horizontal: 22, vertical: 0),
-            //   padding: EdgeInsets.symmetric(horizontal: 16, vertical: 0),
-            //   decoration: BoxDecoration(
-            //     color: Colors.white,
-            //     borderRadius: BorderRadius.circular(8),
-            //     boxShadow: [
-            //       BoxShadow(
-            //         color: Colors.black12,
-            //         blurRadius: 2,
-            //         offset: Offset(0, 4),
-            //       ),
-            //     ],
-            //   ),
-            //   child: Row(
-            //     children: [
-            //       // Input Box
-            //       Expanded(
-            //         child: TextField(
-            //           decoration: InputDecoration(
-            //             hintText: 'Enter command...',
-            //             border: InputBorder.none,
-            //           ),
-            //         ),
-            //       ),
-            //       Spacer (),
-            //       // Terminal Icon
-            //       Icon(Icons.terminal, color: Colors.deepPurpleAccent),
-            //     ],
-            //   ),
-            // ),
-            // SizedBox(height: 15),
-            Row(
-              children: [
-                SizedBox(width: 22),
-                // ElevatedButton(
-                //     onPressed: () {},
-                //     style: ElevatedButton.styleFrom(
-                //       backgroundColor: Color(0xffcd7778), // Optional: set background if needed
-                //       foregroundColor: Colors.white, // ✅ text color
-                //       shape: RoundedRectangleBorder(
-                //         borderRadius: BorderRadius.circular(5), // ✅ rounded corners
-                //       ),
-                //     ),
-                //     child:
-                //     Row(children: [
-                //       Icon(Icons.image_outlined),
-                //       SizedBox(width: 5),
-                //       Text("Gallery"),
-                //     ])
-                // ),
-                Spacer(),
-                ElevatedButton(
-                    onPressed: () {},
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Color(0xff75a78e),
-                      foregroundColor: Colors.white,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(5),
-                      ),
-                    ),
-                    child: Row(children: [
-                      Icon(Icons.add),
-                      SizedBox(width: 5),
-                      Text("Quick Add"),
-                    ])
-                ),
-                SizedBox(width: 22),
-              ],
             ),
             SizedBox(height: 25),
             //   =======================================================================

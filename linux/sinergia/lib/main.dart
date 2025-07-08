@@ -21,6 +21,8 @@ class MyApp extends StatelessWidget {
       title: 'Linux Chat Server',
       theme: ThemeData(primarySwatch: Colors.blue, useMaterial3: true),
       home: ChatServerScreen(),
+            debugShowCheckedModeBanner: false,
+
     );
   }
 }
@@ -132,7 +134,10 @@ class _ChatServerScreenState extends State<ChatServerScreen> {
                 storedFingerprint == receivedFingerprint) {
               if (storedFingerprint == null && receivedFingerprint != null) {
                 final prefs = await SharedPreferences.getInstance();
-                await prefs.setString('paired_fingerprint', receivedFingerprint);
+                await prefs.setString(
+                  'paired_fingerprint',
+                  receivedFingerprint,
+                );
                 print("✅ Fingerprint stored: $receivedFingerprint");
               }
 
@@ -194,7 +199,6 @@ class _ChatServerScreenState extends State<ChatServerScreen> {
               });
             });
           }
-
         } catch (e) {
           print("❌ Error parsing message: $e");
           print("Raw data: $data");
@@ -219,19 +223,28 @@ class _ChatServerScreenState extends State<ChatServerScreen> {
     );
   }
 
-  Future<void> _handleFileTransfer(Map<String, dynamic> message, IOWebSocketChannel channel) async {
+  Future<void> _handleFileTransfer(
+    Map<String, dynamic> message,
+    IOWebSocketChannel channel,
+  ) async {
     try {
       final filename = message['filename'];
       final base64Data = message['data'];
       final sender = message['sender'] ?? 'Unknown';
-      final timestamp = message['timestamp'] ?? DateTime.now().toIso8601String();
+      final timestamp =
+          message['timestamp'] ?? DateTime.now().toIso8601String();
       final fileIndex = message['file_index'] ?? 0;
 
       print("📁 Receiving file: $filename (index: $fileIndex)");
 
       if (filename == null || base64Data == null) {
         print("❌ Invalid file transfer message - missing filename or data");
-        _sendFileAck(channel, filename ?? 'unknown', 'error', 'Missing filename or data');
+        _sendFileAck(
+          channel,
+          filename ?? 'unknown',
+          'error',
+          'Missing filename or data',
+        );
         return;
       }
 
@@ -257,7 +270,7 @@ class _ChatServerScreenState extends State<ChatServerScreen> {
       String finalFilename = filename;
       File file = File('${saveDir.path}/$finalFilename');
       int counter = 1;
-      
+
       while (await file.exists()) {
         final nameParts = filename.split('.');
         if (nameParts.length > 1) {
@@ -274,7 +287,7 @@ class _ChatServerScreenState extends State<ChatServerScreen> {
       // Save file
       await file.writeAsBytes(bytes);
       final fileSizeKB = (bytes.length / 1024).round();
-      
+
       print('✅ File saved successfully: ${file.path} (${fileSizeKB}KB)');
 
       // Update UI with received file info
@@ -292,14 +305,23 @@ class _ChatServerScreenState extends State<ChatServerScreen> {
 
       // Send success acknowledgment
       _sendFileAck(channel, filename, 'success', 'File saved successfully');
-
     } catch (e) {
       print("❌ Error handling file transfer: $e");
-      _sendFileAck(channel, message['filename'] ?? 'unknown', 'error', 'Server error: $e');
+      _sendFileAck(
+        channel,
+        message['filename'] ?? 'unknown',
+        'error',
+        'Server error: $e',
+      );
     }
   }
 
-  void _sendFileAck(IOWebSocketChannel channel, String filename, String status, String message) {
+  void _sendFileAck(
+    IOWebSocketChannel channel,
+    String filename,
+    String status,
+    String message,
+  ) {
     try {
       final ack = jsonEncode({
         'channel': 'file_ack',
@@ -308,7 +330,7 @@ class _ChatServerScreenState extends State<ChatServerScreen> {
         'message': message,
         'timestamp': DateTime.now().toIso8601String(),
       });
-      
+
       channel.sink.add(ack);
       print("📤 Sent file acknowledgment: $filename -> $status");
     } catch (e) {
@@ -428,160 +450,122 @@ class _ChatServerScreenState extends State<ChatServerScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      body: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: Row(
-          children: [
-            // Left side - QR Code
-            Expanded(
-              flex: 1,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.center,
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Center(
-                    child: Card(
-                      child: Padding(
-                        padding: const EdgeInsets.all(16.0),
-                        child: Column(
-                          children: [
-                            Text(
-                              'Scan to Connect',
-                              style: TextStyle(
-                                fontWeight: FontWeight.bold,
-                                fontSize: 22,
-                              ),
+    return _connectionStatus != "Connected"
+        ? Scaffold(
+          body: Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Row(
+              children: [
+                // Left side - QR Code
+                Expanded(
+                  flex: 1,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.center,
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Center(
+                        child: Card(
+                          child: Padding(
+                            padding: const EdgeInsets.all(16.0),
+                            child: Column(
+                              children: [
+                                Text(
+                                  'Scan to Connect',
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 22,
+                                  ),
+                                ),
+                                SizedBox(height: 20),
+                                if (_isServerRunning)
+                                  Container(
+                                    padding: EdgeInsets.all(16),
+                                    decoration: BoxDecoration(
+                                      color: Colors.white,
+                                      borderRadius: BorderRadius.circular(8),
+                                    ),
+                                    child: QrImageView(
+                                      data: _getQRData(),
+                                      version: QrVersions.auto,
+                                      size: 400.0,
+                                    ),
+                                  ),
+                                SizedBox(height: 20),
+                                Text('Server: $_serverAddress:$_serverPort'),
+                                Text('Status: $_connectionStatus'),
+                              ],
                             ),
-                            SizedBox(height: 20),
-                            if (_isServerRunning)
-                              Container(
-                                padding: EdgeInsets.all(16),
-                                decoration: BoxDecoration(
-                                  color: Colors.white,
-                                  borderRadius: BorderRadius.circular(8),
-                                ),
-                                child: QrImageView(
-                                  data: _getQRData(),
-                                  version: QrVersions.auto,
-                                  size: 400.0,
-                                ),
-                              ),
-                            SizedBox(height: 20),
-                            Text('Server: $_serverAddress:$_serverPort'),
-                            Text('Status: $_connectionStatus'),
-                            // SizedBox(height: 10),
-                            // Text(
-                            //   'Files Received: ${_receivedFiles.length}',
-                            //   style: TextStyle(
-                            //     fontWeight: FontWeight.bold,
-                            //     color: Colors.green,
-                            //   ),
-                            // ),
-                          ],
+                          ),
                         ),
                       ),
-                    ),
+                    ],
                   ),
-                ],
-              ),
+                ),
+              ],
+            ),
+          ),
+        )
+        // Dasboard page---------------------------------------------------------------------------------------------
+        : Scaffold(
+          appBar: AppBar(
+            automaticallyImplyLeading:
+                false, // <-- This removes the back button
+            backgroundColor: Colors.white,
+            title: Row(
+              children: [
+                Container(
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      colors: [Colors.orange, Colors.pinkAccent],
+                    ),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  padding: EdgeInsets.all(2),
+                  child: Icon(Icons.compare_arrows, color: Colors.white),
+                ),
+                SizedBox(width: 10),
+                Text(
+                  'Dashboard',
+                  style: TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.black.withValues(alpha: 0.6),
+                  ),
+                ),
+              ],
             ),
 
-            // Right side - Received Files List
-            // Expanded(
-            //   flex: 2,
-            //   child: Column(
-            //     crossAxisAlignment: CrossAxisAlignment.start,
-            //     children: [
-            //       Text(
-            //         'Received Files',
-            //         style: Theme.of(context).textTheme.headlineSmall,
-            //       ),
-            //       SizedBox(height: 10),
-            //       Expanded(
-            //         child: Card(
-            //           child: _receivedFiles.isEmpty
-            //               ? Center(
-            //                   child: Column(
-            //                     mainAxisAlignment: MainAxisAlignment.center,
-            //                     children: [
-            //                       Icon(
-            //                         Icons.file_download_outlined,
-            //                         size: 64,
-            //                         color: Colors.grey,
-            //                       ),
-            //                       SizedBox(height: 16),
-            //                       Text(
-            //                         'No files received yet',
-            //                         style: TextStyle(
-            //                           fontSize: 18,
-            //                           color: Colors.grey,
-            //                         ),
-            //                       ),
-            //                       SizedBox(height: 8),
-            //                       Text(
-            //                         'Files will appear here when sent from Android',
-            //                         style: TextStyle(
-            //                           fontSize: 14,
-            //                           color: Colors.grey,
-            //                         ),
-            //                       ),
-            //                     ],
-            //                   ),
-            //                 )
-            //               : ListView.builder(
-            //                   padding: EdgeInsets.all(8),
-            //                   itemCount: _receivedFiles.length,
-            //                   itemBuilder: (context, index) {
-            //                     final file = _receivedFiles[index];
-            //                     return Card(
-            //                       margin: EdgeInsets.symmetric(vertical: 4),
-            //                       child: ListTile(
-            //                         leading: Icon(
-            //                           Icons.insert_drive_file,
-            //                           color: Colors.blue,
-            //                         ),
-            //                         title: Text(
-            //                           file['filename'],
-            //                           style: TextStyle(fontWeight: FontWeight.bold),
-            //                         ),
-            //                         subtitle: Column(
-            //                           crossAxisAlignment: CrossAxisAlignment.start,
-            //                           children: [
-            //                             Text('From: ${file['sender']}'),
-            //                             Text('Size: ${_formatFileSize(file['size'])}'),
-            //                             Text('Saved: ${_formatTime(file['timestamp'])}'),
-            //                             Text(
-            //                               'Path: ${file['path']}',
-            //                               style: TextStyle(
-            //                                 fontSize: 12,
-            //                                 color: Colors.grey,
-            //                               ),
-            //                             ),
-            //                           ],
-            //                         ),
-            //                         trailing: IconButton(
-            //                           icon: Icon(Icons.folder_open),
-            //                           onPressed: () {
-            //                             // Open file location
-            //                             Process.run('xdg-open', [
-            //                               Directory(file['path']).parent.path
-            //                             ]);
-            //                           },
-            //                         ),
-            //                       ),
-            //                     );
-            //                   },
-            //                 ),
-            //         ),
-            //       ),
-            //     ],
-            //   ),
-            // ),
-          ],
-        ),
-      ),
-    );
+            actions: [
+              Icon(Icons.ev_station, color: Color(0xff75a78e)),
+              SizedBox(width: 6),
+              Container(
+                decoration: BoxDecoration(
+                  color: Color(0xff7777cd).withValues(alpha: 0.2),
+                  borderRadius: BorderRadius.circular(7),
+                ),
+                padding: EdgeInsets.symmetric(vertical: 8, horizontal: 15),
+                child: Row(
+                  children: [
+                    Icon(Icons.computer, size: 15),
+                    Text('100%'),
+                    SizedBox(width: 12),
+                    Icon(Icons.phone_android, size: 15),
+                    // BatteryLevelWidget(),
+                    Text('40%'),
+                  ],
+                ),
+              ),
+
+              IconButton(
+                icon: Icon(Icons.settings),
+                onPressed: () => Navigator.pop(context),
+              ),
+            ],
+          ),
+          body: SingleChildScrollView(
+            child: Center(child: Text("This is dashboard page")),
+          ),
+        );
   }
 
   @override
