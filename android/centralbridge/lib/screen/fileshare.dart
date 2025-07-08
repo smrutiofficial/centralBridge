@@ -3,12 +3,14 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:path/path.dart';
-import 'package:web_socket_channel/web_socket_channel.dart';
+import 'dart:async';
+
+// Import your WebSocket manager
+import 'package:centralbridge/global_socket_manager.dart';
 
 class Fileshare extends StatefulWidget {
-  final WebSocketChannel webSocketChannel;
-
-  Fileshare({required this.webSocketChannel});
+  // Remove the webSocketChannel parameter since we'll use the manager
+  Fileshare();
 
   @override
   _FileshareState createState() => _FileshareState();
@@ -19,17 +21,73 @@ class _FileshareState extends State<Fileshare> {
   List<FileTransferStatus> _fileTransferStatus = [];
   int _currentFileIndex = 0;
   bool _isTransferring = false;
-
+  
+  // Stream subscriptions
+  StreamSubscription<Map<String, dynamic>>? _fileAckSubscription;
+  StreamSubscription<String>? _connectionSubscription;
+  
   @override
   void initState() {
     super.initState();
-    // Set up a single stream listener for this screen
-    _setupStreamListener();
+    _setupStreamListeners();
   }
 
-  void _setupStreamListener() {
-    // Don't create a new listener, instead use a broadcast stream
-    // or handle the acknowledgments differently
+  void _setupStreamListeners() {
+    // Listen to file transfer acknowledgments
+    _fileAckSubscription = WebSocketManager.instance.listenToFileTransferAcks().listen(
+      (data) {
+        _handleFileAcknowledgment(data);
+      },
+      onError: (error) {
+        print('File ack stream error: $error');
+      },
+    );
+    
+    // Listen to connection status
+    _connectionSubscription = WebSocketManager.instance.connectionStream.listen(
+      (status) {
+        if (status == 'Disconnected' && _isTransferring) {
+          // Handle disconnection during transfer
+          setState(() {
+            _isTransferring = false;
+            // Mark pending files as error
+            for (int i = 0; i < _fileTransferStatus.length; i++) {
+              if (_fileTransferStatus[i].status == TransferStatus.sending) {
+                _fileTransferStatus[i].status = TransferStatus.error;
+              }
+            }
+          });
+        }
+      },
+    );
+  }
+
+  void _handleFileAcknowledgment(Map<String, dynamic> data) {
+    // Handle different types of file acknowledgments
+    String? filename = data['filename'];
+    int? fileIndex = data['file_index'];
+    String? status = data['status'];
+    
+    if (filename != null || fileIndex != null) {
+      setState(() {
+        // Find the file by index or filename
+        int targetIndex = -1;
+        if (fileIndex != null && fileIndex < _fileTransferStatus.length) {
+          targetIndex = fileIndex;
+        } else if (filename != null) {
+          targetIndex = _fileTransferStatus.indexWhere((f) => f.filename == filename);
+        }
+        
+        if (targetIndex >= 0) {
+          if (status == 'received' || status == 'success') {
+            _fileTransferStatus[targetIndex].status = TransferStatus.completed;
+            _fileTransferStatus[targetIndex].progress = 1.0;
+          } else if (status == 'error' || status == 'failed') {
+            _fileTransferStatus[targetIndex].status = TransferStatus.error;
+          }
+        }
+      });
+    }
   }
 
   Future<void> _pickFiles() async {
@@ -59,50 +117,101 @@ class _FileshareState extends State<Fileshare> {
   Future<void> _sendFiles() async {
     if (_selectedFiles.isEmpty || _isTransferring) return;
 
+    // Check if connected
+    if (!WebSocketManager.instance.isConnected) {
+      // ScaffoldMessenger.of(context).showSnackBar(
+      //   SnackBar(content: Text('Not connected to server')),
+      // );
+      return;
+    }
+
     setState(() {
       _isTransferring = true;
       _currentFileIndex = 0;
     });
 
-    // Send files one by one with a simple approach
-    for (int i = 0; i < _selectedFiles.length; i++) {
-      await _sendSingleFile(i);
-      await Future.delayed(Duration(milliseconds: 500)); // Small delay between files
+    try {
+      // Send files one by one
+      for (int i = 0; i < _selectedFiles.length; i++) {
+        if (!WebSocketManager.instance.isConnected) {
+          // Connection lost during transfer
+          setState(() {
+            _fileTransferStatus[i].status = TransferStatus.error;
+          });
+          break;
+        }
+        
+        await _sendSingleFile(i);
+        
+        // Small delay between files to prevent overwhelming the connection
+        if (i < _selectedFiles.length - 1) {
+          await Future.delayed(Duration(milliseconds: 500));
+        }
+      }
+    } catch (e) {
+      print('Error during file transfer: $e');
+      // ScaffoldMessenger.of(context).showSnackBar(
+      //   SnackBar(content: Text('Error during file transfer: $e')),
+      // );
+    } finally {
+      setState(() {
+        _isTransferring = false;
+      });
     }
-
-    setState(() {
-      _isTransferring = false;
-    });
   }
 
   Future<void> _sendSingleFile(int index) async {
     final file = _selectedFiles[index];
-    final bytes = await file.readAsBytes();
-    final base64Data = base64Encode(bytes);
-    final filename = basename(file.path);
+    
+    try {
+      final bytes = await file.readAsBytes();
+      final base64Data = base64Encode(bytes);
+      final filename = basename(file.path);
 
-    setState(() {
-      _fileTransferStatus[index].status = TransferStatus.sending;
-      _fileTransferStatus[index].progress = 0.5;
-    });
+      setState(() {
+        _fileTransferStatus[index].status = TransferStatus.sending;
+        _fileTransferStatus[index].progress = 0.5;
+      });
 
-    final fileMessage = jsonEncode({
-      'channel': 'file_transfer',
-      'filename': filename,
-      'data': base64Data,
-      'sender': 'Android',
-      'timestamp': DateTime.now().toIso8601String(),
-      'file_index': index, // Add index to track which file this is
-    });
+      final fileMessage = {
+        'channel': 'file_transfer',
+        'filename': filename,
+        'data': base64Data,
+        'sender': 'Android',
+        'timestamp': DateTime.now().toIso8601String(),
+        'file_index': index,
+        'file_size': bytes.length,
+        'total_files': _selectedFiles.length,
+      };
 
-    print("📤 Sending file ${index + 1}/${_selectedFiles.length}: $filename");
-    widget.webSocketChannel.sink.add(fileMessage);
+      print("📤 Sending file ${index + 1}/${_selectedFiles.length}: $filename");
+      
+      // Send via WebSocket manager
+      WebSocketManager.instance.sendMessage(fileMessage);
 
-    // Mark as sent (you might want to wait for actual acknowledgment)
-    setState(() {
-      _fileTransferStatus[index].status = TransferStatus.completed;
-      _fileTransferStatus[index].progress = 1.0;
-    });
+      // Set a timeout for acknowledgment
+      Timer(Duration(seconds: 30), () {
+        if (_fileTransferStatus[index].status == TransferStatus.sending) {
+          setState(() {
+            _fileTransferStatus[index].status = TransferStatus.error;
+          });
+        }
+      });
+      
+    } catch (e) {
+      print('Error sending file $index: $e');
+      setState(() {
+        _fileTransferStatus[index].status = TransferStatus.error;
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    // Clean up subscriptions
+    _fileAckSubscription?.cancel();
+    _connectionSubscription?.cancel();
+    super.dispose();
   }
 
   @override
@@ -222,16 +331,33 @@ class _FileshareState extends State<Fileshare> {
                         child: ListTile(
                           leading: _getStatusIcon(status.status),
                           title: Text(status.filename),
-                          subtitle: LinearProgressIndicator(
-                            value: status.progress,
-                            backgroundColor: Colors.grey[300],
-                            valueColor: AlwaysStoppedAnimation<Color>(
-                              status.status == TransferStatus.completed
-                                  ? Colors.green
-                                  : Colors.blue,
-                            ),
+                          subtitle: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              LinearProgressIndicator(
+                                value: status.progress,
+                                backgroundColor: Colors.grey[300],
+                                valueColor: AlwaysStoppedAnimation<Color>(
+                                  status.status == TransferStatus.completed
+                                      ? Colors.green
+                                      : status.status == TransferStatus.error
+                                      ? Colors.red
+                                      : Colors.blue,
+                                ),
+                              ),
+                              SizedBox(height: 4),
+                              Text(
+                                _getStatusText(status.status),
+                                style: TextStyle(fontSize: 12),
+                              ),
+                            ],
                           ),
-                          trailing: Text(_getStatusText(status.status)),
+                          trailing: status.status == TransferStatus.error
+                              ? IconButton(
+                            icon: Icon(Icons.refresh, color: Colors.blue),
+                            onPressed: () => _retrySingleFile(index),
+                          )
+                              : null,
                         ),
                       );
                     },
@@ -264,6 +390,23 @@ class _FileshareState extends State<Fileshare> {
     );
   }
 
+  // Retry single file transfer
+  Future<void> _retrySingleFile(int index) async {
+    if (!WebSocketManager.instance.isConnected) {
+      // ScaffoldMessenger.of(context).showSnackBar(
+      //   SnackBar(content: Text('Not connected to server')),
+      // );
+      return;
+    }
+
+    setState(() {
+      _fileTransferStatus[index].status = TransferStatus.pending;
+      _fileTransferStatus[index].progress = 0.0;
+    });
+
+    await _sendSingleFile(index);
+  }
+
   Widget _getStatusIcon(TransferStatus status) {
     switch (status) {
       case TransferStatus.pending:
@@ -290,7 +433,7 @@ class _FileshareState extends State<Fileshare> {
       case TransferStatus.completed:
         return 'Completed';
       case TransferStatus.error:
-        return 'Error';
+        return 'Error - Tap retry';
     }
   }
 }

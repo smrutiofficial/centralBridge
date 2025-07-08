@@ -1,16 +1,16 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:web_socket_channel/io.dart';
-import 'package:web_socket_channel/web_socket_channel.dart';
-//screns
+import 'dart:async';
+//screens
 import 'package:centralbridge/screen/castCameraScreen.dart';
 import 'package:centralbridge/screen/castscreen.dart';
 import 'package:centralbridge/screen/clipboardsync.dart';
 import 'package:centralbridge/screen/fileshare.dart';
 import 'package:centralbridge/screen/remoteinput.dart';
 import 'package:centralbridge/battery.dart';
-
+// Import your WebSocket manager
+import 'package:centralbridge/global_socket_manager.dart';
 
 class DashboardScreen extends StatefulWidget {
   final String serverUrl;
@@ -23,11 +23,13 @@ class DashboardScreen extends StatefulWidget {
 }
 
 class _DashboardScreenState extends State<DashboardScreen> {
-  late WebSocketChannel channel;
   late Map<String, dynamic> _deviceInfo;
   String connectionStatus = "Connecting...";
   String lastMessage = "";
-
+  
+  // Stream subscriptions
+  StreamSubscription<Map<String, dynamic>>? _messageSubscription;
+  StreamSubscription<String>? _connectionSubscription;
 
   int _selectedIndex = 2;
 
@@ -41,56 +43,77 @@ class _DashboardScreenState extends State<DashboardScreen> {
   void initState() {
     super.initState();
     _deviceInfo = Map<String, dynamic>.from(widget.deviceInfo);
-    _connectToServer();
+    _initializeWebSocket();
   }
 
-  void _connectToServer() {
-    channel = IOWebSocketChannel.connect(widget.serverUrl);
+  Future<void> _initializeWebSocket() async {
+    // Connect to WebSocket using the manager
+    await WebSocketManager.instance.connect(widget.serverUrl);
     
-    channel.stream.listen((message) {
-      final data = jsonDecode(message);
-
-      // 🔐 Fingerprint Verification
-      if (data['text'] == '[verified]' && data['device_info'] != null) {
-        final deviceInfo = Map<String, dynamic>.from(data['device_info']);
-        print("✅ Received verified device info: $deviceInfo");
-
-        setState(() {
-          _deviceInfo = deviceInfo;
-          connectionStatus = "Connected";
-          lastMessage = 'System info received.';
-        });
-      }
-
-      // 🔄 System Info Update Channel
-      else if (data['channel'] == 'system_info' && data['device_info'] != null) {
-        final deviceInfo = Map<String, dynamic>.from(data['device_info']);
-        print("📡 Received periodic update: $deviceInfo");
-
-        setState(() {
-          _deviceInfo = deviceInfo;
-          lastMessage = 'System info updated.';
-        });
-      }
-
-      // 💬 Fallback Message
-      else {
-        setState(() {
-          lastMessage = data['text'] ?? 'Unknown';
-        });
-      }
-    },onDone: _reconnect, onError: (e) => _reconnect());
-
-
-
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-      _sendFingerprint();
-    });
+    // Set up stream listeners
+    _setupStreamListeners();
+    
+    // Send fingerprint after a short delay
+    Future.delayed(Duration(milliseconds: 500), _sendFingerprint);
   }
 
-  void _reconnect() async {
-    await Future.delayed(Duration(seconds: 2));
-    _connectToServer();
+  void _setupStreamListeners() {
+    // Listen to system info messages
+    _messageSubscription = WebSocketManager.instance.listenToSystemInfo().listen(
+      (data) {
+        _handleSystemMessage(data);
+      },
+      onError: (error) {
+        print('System message stream error: $error');
+      },
+    );
+
+    // Listen to connection status
+    _connectionSubscription = WebSocketManager.instance.connectionStream.listen(
+      (status) {
+        setState(() {
+          connectionStatus = status;
+          if (status == 'Disconnected') {
+            lastMessage = 'Connection lost';
+          } else if (status == 'Reconnecting...') {
+            lastMessage = 'Reconnecting...';
+          }
+        });
+      },
+      onError: (error) {
+        print('Connection stream error: $error');
+      },
+    );
+  }
+
+  void _handleSystemMessage(Map<String, dynamic> data) {
+    // 🔐 Fingerprint Verification
+    if (data['text'] == '[verified]' && data['device_info'] != null) {
+      final deviceInfo = Map<String, dynamic>.from(data['device_info']);
+      print("✅ Received verified device info: $deviceInfo");
+
+      setState(() {
+        _deviceInfo = deviceInfo;
+        connectionStatus = "Connected";
+        lastMessage = 'System info received.';
+      });
+    }
+    // 🔄 System Info Update Channel
+    else if (data['channel'] == 'system_info' && data['device_info'] != null) {
+      final deviceInfo = Map<String, dynamic>.from(data['device_info']);
+      print("📡 Received periodic update: $deviceInfo");
+
+      setState(() {
+        _deviceInfo = deviceInfo;
+        lastMessage = 'System info updated.';
+      });
+    }
+    // 💬 Fallback Message
+    else {
+      setState(() {
+        lastMessage = data['text'] ?? 'Unknown';
+      });
+    }
   }
 
   Future<void> _sendFingerprint() async {
@@ -109,7 +132,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
             'timestamp': DateTime.now().toIso8601String(),
           };
           print("✅ Sending fingerprint: $fingerprint");
-          channel.sink.add(jsonEncode(msg));
+          WebSocketManager.instance.sendMessage(msg);
           return;
         }
       }
@@ -120,7 +143,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   @override
   void dispose() {
-    channel.sink.close();
+    // Clean up subscriptions
+    _messageSubscription?.cancel();
+    _connectionSubscription?.cancel();
+    
+    // Note: Don't dispose the WebSocket manager here as other screens might be using it
+    // Only dispose when the entire app is closing
     super.dispose();
   }
 
@@ -130,6 +158,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     return Scaffold(
       backgroundColor: Color(0xffd7dedb),
       appBar: AppBar(
+        automaticallyImplyLeading: false, // <-- This removes the back button
         backgroundColor: Colors.white,
         title:
             Row(children: [
@@ -309,7 +338,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     Navigator.push(
                       context,
                       MaterialPageRoute(
-                        builder: (_) => Fileshare(webSocketChannel: channel),
+                        builder: (_) => Fileshare(),
                       ),
                     );
                   }),
