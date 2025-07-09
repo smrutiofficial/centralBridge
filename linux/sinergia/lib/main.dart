@@ -9,6 +9,7 @@ import 'package:network_info_plus/network_info_plus.dart';
 import 'package:crypto/crypto.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:multicast_dns/multicast_dns.dart';
+import 'package:sinergia/screens/dashboard.dart';
 
 void main() {
   runApp(MyApp());
@@ -304,10 +305,14 @@ class _ChatServerScreenState extends State<ChatServerScreen> {
 
       // Send success acknowledgment
       _sendFileAck(channel, filename, 'success', 'File saved successfully');
+      // 🔊 Play sound
+      await Process.run('canberra-gtk-play', ['--id=complete', '--volume=1000']);
+
+      // 🔔 Send notification
       await Process.run('notify-send', [
         "File saved successfully",
         filename,
-        '--icon=dialog-information', // Optional icon
+        '--icon=Icon(Icons.compare_arrows, color: Colors.white),', // Optional icon
         '--app-name=Central Bridge',
       ]);
     } catch (e) {
@@ -318,7 +323,7 @@ class _ChatServerScreenState extends State<ChatServerScreen> {
         'error',
         'Server error: $e',
       );
-       await Process.run('notify-send', [
+      await Process.run('notify-send', [
         "Error handling file transfer",
         message['filename'],
         '--icon=dialog-information', // Optional icon
@@ -517,66 +522,7 @@ class _ChatServerScreenState extends State<ChatServerScreen> {
           ),
         )
         // Dasboard page---------------------------------------------------------------------------------------------
-        : Scaffold(
-          appBar: AppBar(
-            automaticallyImplyLeading:
-                false, // <-- This removes the back button
-            backgroundColor: Colors.white,
-            title: Row(
-              children: [
-                Container(
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      colors: [Colors.orange, Colors.pinkAccent],
-                    ),
-                    borderRadius: BorderRadius.circular(6),
-                  ),
-                  padding: EdgeInsets.all(2),
-                  child: Icon(Icons.compare_arrows, color: Colors.white),
-                ),
-                SizedBox(width: 10),
-                Text(
-                  'Dashboard',
-                  style: TextStyle(
-                    fontSize: 20,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.black.withValues(alpha: 0.6),
-                  ),
-                ),
-              ],
-            ),
-
-            actions: [
-              Icon(Icons.ev_station, color: Color(0xff75a78e)),
-              SizedBox(width: 6),
-              Container(
-                decoration: BoxDecoration(
-                  color: Color(0xff7777cd).withValues(alpha: 0.2),
-                  borderRadius: BorderRadius.circular(7),
-                ),
-                padding: EdgeInsets.symmetric(vertical: 8, horizontal: 15),
-                child: Row(
-                  children: [
-                    Icon(Icons.computer, size: 15),
-                    Text('100%'),
-                    SizedBox(width: 12),
-                    Icon(Icons.phone_android, size: 15),
-                    // BatteryLevelWidget(),
-                    Text('40%'),
-                  ],
-                ),
-              ),
-
-              IconButton(
-                icon: Icon(Icons.settings),
-                onPressed: () => Navigator.pop(context),
-              ),
-            ],
-          ),
-          body: SingleChildScrollView(
-            child: Center(child: Text("This is dashboard page")),
-          ),
-        );
+        : DashboardPage();
   }
 
   @override
