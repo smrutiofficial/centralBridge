@@ -19,6 +19,7 @@ class Fileshare extends StatefulWidget {
 class _FileshareState extends State<Fileshare> {
   List<File> _selectedFiles = [];
   List<FileTransferStatus> _fileTransferStatus = [];
+  List<FileTransferStatus> _completedTransfers = []; // Separate list for completed transfers
   int _currentFileIndex = 0;
   bool _isTransferring = false;
 
@@ -73,16 +74,25 @@ class _FileshareState extends State<Fileshare> {
 
     if (filename != null && status != null) {
       setState(() {
-        // Find the file by filename
+        // Find the file by filename in progress list
         int targetIndex = _fileTransferStatus.indexWhere((f) => f.filename == filename);
 
         if (targetIndex >= 0) {
           print('📊 Updating status for file at index $targetIndex: $filename -> $status');
 
           if (status == 'success') {
-            _fileTransferStatus[targetIndex].status = TransferStatus.completed;
-            _fileTransferStatus[targetIndex].progress = 1.0;
-            print('✅ File $filename marked as completed');
+            // Move the file to completed list
+            FileTransferStatus completedFile = _fileTransferStatus[targetIndex];
+            completedFile.status = TransferStatus.completed;
+            completedFile.progress = 1.0;
+
+            // Add to completed list
+            _completedTransfers.add(completedFile);
+
+            // Remove from progress list
+            _fileTransferStatus.removeAt(targetIndex);
+
+            print('✅ File $filename moved to completed tab');
           } else if (status == 'error') {
             _fileTransferStatus[targetIndex].status = TransferStatus.error;
             print('❌ File $filename marked as error: $message');
@@ -116,6 +126,9 @@ class _FileshareState extends State<Fileshare> {
               progress: 0.0,
             )
         ).toList();
+
+        // Clear completed transfers when new files are selected
+        _completedTransfers.clear();
       });
     }
   }
@@ -142,7 +155,11 @@ class _FileshareState extends State<Fileshare> {
         if (!WebSocketManager.instance.isConnected) {
           // Connection lost during transfer
           setState(() {
-            _fileTransferStatus[i].status = TransferStatus.error;
+            // Find the file in progress list and mark as error
+            int progressIndex = _fileTransferStatus.indexWhere((f) => f.filename == basename(_selectedFiles[i].path));
+            if (progressIndex >= 0) {
+              _fileTransferStatus[progressIndex].status = TransferStatus.error;
+            }
           });
           break;
         }
@@ -168,15 +185,22 @@ class _FileshareState extends State<Fileshare> {
 
   Future<void> _sendSingleFile(int index) async {
     final file = _selectedFiles[index];
+    final filename = basename(file.path);
+
+    // Find the file in progress list
+    int progressIndex = _fileTransferStatus.indexWhere((f) => f.filename == filename);
+    if (progressIndex < 0) {
+      print('⚠️ File $filename not found in progress list');
+      return;
+    }
 
     try {
       final bytes = await file.readAsBytes();
       final base64Data = base64Encode(bytes);
-      final filename = basename(file.path);
 
       setState(() {
-        _fileTransferStatus[index].status = TransferStatus.sending;
-        _fileTransferStatus[index].progress = 0.5;
+        _fileTransferStatus[progressIndex].status = TransferStatus.sending;
+        _fileTransferStatus[progressIndex].progress = 0.5;
       });
 
       final fileMessage = {
@@ -197,9 +221,11 @@ class _FileshareState extends State<Fileshare> {
 
       // Set a timeout for acknowledgment (increased to 60 seconds)
       Timer(Duration(seconds: 60), () {
-        if (_fileTransferStatus[index].status == TransferStatus.sending) {
+        // Check if file is still in progress list and still sending
+        int currentProgressIndex = _fileTransferStatus.indexWhere((f) => f.filename == filename);
+        if (currentProgressIndex >= 0 && _fileTransferStatus[currentProgressIndex].status == TransferStatus.sending) {
           setState(() {
-            _fileTransferStatus[index].status = TransferStatus.error;
+            _fileTransferStatus[currentProgressIndex].status = TransferStatus.error;
           });
           print('⏰ Timeout waiting for acknowledgment for file: $filename');
         }
@@ -208,7 +234,9 @@ class _FileshareState extends State<Fileshare> {
     } catch (e) {
       print('Error sending file $index: $e');
       setState(() {
-        _fileTransferStatus[index].status = TransferStatus.error;
+        if (progressIndex < _fileTransferStatus.length) {
+          _fileTransferStatus[progressIndex].status = TransferStatus.error;
+        }
       });
     }
   }
@@ -230,8 +258,8 @@ class _FileshareState extends State<Fileshare> {
           title: Text('File Share'),
           bottom: TabBar(
             tabs: [
-              Tab(text: 'Progress'),
-              Tab(text: 'Completed'),
+              Tab(text: 'Progress (${_fileTransferStatus.length})'),
+              Tab(text: 'Completed (${_completedTransfers.length})'),
             ],
           ),
         ),
@@ -326,9 +354,9 @@ class _FileshareState extends State<Fileshare> {
             Expanded(
               child: TabBarView(
                 children: [
-                  // Progress Tab
+                  // Progress Tab - Only shows pending, sending, and error files
                   _fileTransferStatus.isEmpty
-                      ? Center(child: Text('No files selected'))
+                      ? Center(child: Text('No files in progress'))
                       : ListView.builder(
                     itemCount: _fileTransferStatus.length,
                     itemBuilder: (context, index) {
@@ -345,9 +373,7 @@ class _FileshareState extends State<Fileshare> {
                                 value: status.progress,
                                 backgroundColor: Colors.grey[300],
                                 valueColor: AlwaysStoppedAnimation<Color>(
-                                  status.status == TransferStatus.completed
-                                      ? Colors.green
-                                      : status.status == TransferStatus.error
+                                  status.status == TransferStatus.error
                                       ? Colors.red
                                       : Colors.blue,
                                 ),
@@ -370,20 +396,26 @@ class _FileshareState extends State<Fileshare> {
                     },
                   ),
 
-                  // Completed Tab
-                  _fileTransferStatus.where((s) => s.status == TransferStatus.completed).isEmpty
+                  // Completed Tab - Only shows completed files
+                  _completedTransfers.isEmpty
                       ? Center(child: Text('No completed transfers'))
                       : ListView.builder(
-                    itemCount: _fileTransferStatus.where((s) => s.status == TransferStatus.completed).length,
+                    itemCount: _completedTransfers.length,
                     itemBuilder: (context, index) {
-                      final completedFiles = _fileTransferStatus.where((s) => s.status == TransferStatus.completed).toList();
-                      final status = completedFiles[index];
+                      final status = _completedTransfers[index];
                       return Card(
                         margin: EdgeInsets.symmetric(horizontal: 12, vertical: 4),
                         child: ListTile(
                           leading: Icon(Icons.check_circle, color: Colors.green),
                           title: Text(status.filename),
                           subtitle: Text('Transfer completed'),
+                          trailing: Text(
+                            '${(status.progress * 100).toInt()}%',
+                            style: TextStyle(
+                              color: Colors.green,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
                         ),
                       );
                     },
@@ -411,7 +443,13 @@ class _FileshareState extends State<Fileshare> {
       _fileTransferStatus[index].progress = 0.0;
     });
 
-    await _sendSingleFile(index);
+    // Find the original file index
+    String filename = _fileTransferStatus[index].filename;
+    int originalIndex = _selectedFiles.indexWhere((file) => basename(file.path) == filename);
+
+    if (originalIndex >= 0) {
+      await _sendSingleFile(originalIndex);
+    }
   }
 
   Widget _getStatusIcon(TransferStatus status) {

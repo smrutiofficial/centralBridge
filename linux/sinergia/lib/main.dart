@@ -21,8 +21,7 @@ class MyApp extends StatelessWidget {
       title: 'Linux Chat Server',
       theme: ThemeData(primarySwatch: Colors.blue, useMaterial3: true),
       home: ChatServerScreen(),
-            debugShowCheckedModeBanner: false,
-
+      debugShowCheckedModeBanner: false,
     );
   }
 }
@@ -305,6 +304,12 @@ class _ChatServerScreenState extends State<ChatServerScreen> {
 
       // Send success acknowledgment
       _sendFileAck(channel, filename, 'success', 'File saved successfully');
+      await Process.run('notify-send', [
+        "File saved successfully",
+        filename,
+        '--icon=dialog-information', // Optional icon
+        '--app-name=Central Bridge',
+      ]);
     } catch (e) {
       print("❌ Error handling file transfer: $e");
       _sendFileAck(
@@ -313,6 +318,12 @@ class _ChatServerScreenState extends State<ChatServerScreen> {
         'error',
         'Server error: $e',
       );
+       await Process.run('notify-send', [
+        "Error handling file transfer",
+        message['filename'],
+        '--icon=dialog-information', // Optional icon
+        '--app-name=Central Bridge',
+      ]);
     }
   }
 
