@@ -6,8 +6,6 @@ import 'package:file_picker/file_picker.dart';
 import 'package:path/path.dart';
 import 'dart:async';
 import 'package:crypto/crypto.dart';
-
-// Import your WebSocket manager
 import 'package:centralbridge/global_socket_manager.dart';
 
 class Fileshare extends StatefulWidget {
@@ -23,10 +21,13 @@ class _FileshareState extends State<Fileshare> {
   List<FileTransferStatus> _completedTransfers = [];
   bool _isTransferring = false;
 
-  // Chunking configuration
-  static const int CHUNK_SIZE = 64 * 1024; // 64KB chunks
-  static const int MAX_CONCURRENT_CHUNKS = 2; // Reduced from 3 to 2 for better reliability
-  static const int MAX_RETRIES = 3; // Maximum retries per chunk
+  // Optimized chunking configuration
+  static const int BASE_CHUNK_SIZE = 1024 * 1024; // 1MB base chunk size
+  static const int MAX_CHUNK_SIZE = 10 * 1024 * 1024; // 10MB max chunk size
+  static const int MIN_CHUNK_SIZE = 256 * 1024; // 256KB min chunk size
+  static const int MAX_CONCURRENT_CHUNKS = 8; // Increased parallel transfers
+  static const int MAX_RETRIES = 2; // Reduced retries for faster failure detection
+  static const int SPEED_SAMPLES = 5; // Number of samples for speed calculation
 
   // Stream subscriptions
   StreamSubscription<Map<String, dynamic>>? _fileAckSubscription;
@@ -34,6 +35,7 @@ class _FileshareState extends State<Fileshare> {
 
   // Active transfers tracking
   Map<String, ChunkedTransfer> _activeTransfers = {};
+  Map<String, List<double>> _transferSpeeds = {}; // Track recent speeds per file
 
   @override
   void initState() {
@@ -42,10 +44,8 @@ class _FileshareState extends State<Fileshare> {
   }
 
   void _setupStreamListeners() {
-    // Listen to file transfer acknowledgments
     _fileAckSubscription = WebSocketManager.instance.listenToFileTransferAcks().listen(
           (data) {
-        print('📥 Received file ack: $data');
         _handleFileAcknowledgment(data);
       },
       onError: (error) {
@@ -53,7 +53,6 @@ class _FileshareState extends State<Fileshare> {
       },
     );
 
-    // Listen to connection status
     _connectionSubscription = WebSocketManager.instance.connectionStream.listen(
           (status) {
         if (status == 'Disconnected' && _isTransferring) {
@@ -66,10 +65,8 @@ class _FileshareState extends State<Fileshare> {
   void _handleConnectionLost() {
     setState(() {
       _isTransferring = false;
-      // Cancel all active transfers
       _activeTransfers.clear();
 
-      // Mark sending files as error
       for (int i = 0; i < _fileTransferStatus.length; i++) {
         if (_fileTransferStatus[i].status == TransferStatus.sending) {
           _fileTransferStatus[i].status = TransferStatus.error;
@@ -83,46 +80,51 @@ class _FileshareState extends State<Fileshare> {
     final String? status = data['status'];
     final String? chunkId = data['chunk_id'];
     final int? chunkIndex = data['chunk_index'];
-
-    print('🔍 Processing ack - filename: $filename, status: $status, chunk: $chunkIndex');
+    final int? chunkSize = data['chunk_size'];
 
     if (filename == null) return;
 
-    // Handle chunk acknowledgment
+    // Update speed tracking
+    if (chunkSize != null && data['timestamp'] != null) {
+      try {
+        final sentTime = DateTime.parse(data['timestamp']);
+        final duration = DateTime.now().difference(sentTime).inMicroseconds;
+        if (duration > 0) {
+          final speed = chunkSize / (duration / 1000000); // bytes per second
+          _transferSpeeds[filename] ??= [];
+          _transferSpeeds[filename]!.add(speed);
+          if (_transferSpeeds[filename]!.length > SPEED_SAMPLES) {
+            _transferSpeeds[filename]!.removeAt(0);
+          }
+        }
+      } catch (e) {
+        print('Error parsing speed data: $e');
+      }
+    }
+
     if (chunkId != null && chunkIndex != null) {
       final transfer = _activeTransfers[filename];
       if (transfer != null) {
         transfer.handleChunkAck(chunkIndex, status == 'success');
         _updateTransferProgress(filename, transfer);
 
-        // Continue sending next chunks
         if (status == 'success') {
           _sendNextChunks(filename, transfer);
+        } else if (transfer.shouldRetryChunk(chunkIndex)) {
+          _retryChunk(filename, transfer, chunkIndex);
         } else {
-          // Handle chunk failure - retry if within limits
-          if (transfer.shouldRetryChunk(chunkIndex)) {
-            print('🔄 Retrying chunk $chunkIndex for $filename');
-            _retryChunk(filename, transfer, chunkIndex);
-          } else {
-            print('❌ Chunk $chunkIndex failed permanently for $filename');
-            // Mark transfer as failed if too many chunks failed
-            if (transfer.hasFailed()) {
-              _markTransferAsFailed(filename, 'Too many chunk failures');
-            }
-          }
+          _markTransferAsFailed(filename, 'Chunk $chunkIndex failed');
         }
       }
       return;
     }
 
-    // Handle final file status
     if (status != null) {
       setState(() {
         int targetIndex = _fileTransferStatus.indexWhere((f) => f.filename == filename);
 
         if (targetIndex >= 0) {
           if (status == 'success') {
-            // Move to completed
             FileTransferStatus completedFile = _fileTransferStatus[targetIndex];
             completedFile.status = TransferStatus.completed;
             completedFile.progress = 1.0;
@@ -130,15 +132,12 @@ class _FileshareState extends State<Fileshare> {
 
             _completedTransfers.add(completedFile);
             _fileTransferStatus.removeAt(targetIndex);
-
-            // Clean up active transfer
             _activeTransfers.remove(filename);
-
-            print('✅ File $filename completed successfully');
+            _transferSpeeds.remove(filename);
           } else if (status == 'error') {
             _fileTransferStatus[targetIndex].status = TransferStatus.error;
             _activeTransfers.remove(filename);
-            print('❌ File $filename failed: ${data['message']}');
+            _transferSpeeds.remove(filename);
           }
         }
       });
@@ -153,14 +152,16 @@ class _FileshareState extends State<Fileshare> {
       }
     });
     _activeTransfers.remove(filename);
-    print('❌ Transfer failed for $filename: $reason');
+    _transferSpeeds.remove(filename);
   }
 
   Future<void> _retryChunk(String filename, ChunkedTransfer transfer, int chunkIndex) async {
     if (!WebSocketManager.instance.isConnected) return;
 
     try {
-      await Future.delayed(Duration(milliseconds: 500)); // Small delay before retry
+      // Adaptive delay based on retry count
+      final retryCount = transfer.getRetryCount(chunkIndex);
+      await Future.delayed(Duration(milliseconds: 100 * (retryCount + 1)));
 
       final chunkData = await transfer.getChunkData(chunkIndex);
       final chunkMessage = {
@@ -168,7 +169,7 @@ class _FileshareState extends State<Fileshare> {
         'type': 'chunk',
         'filename': filename,
         'chunk_index': chunkIndex,
-        'chunk_id': '${filename}_${chunkIndex}_${DateTime.now().millisecondsSinceEpoch}', // Unique ID for retry
+        'chunk_id': '${filename}_${chunkIndex}_${DateTime.now().millisecondsSinceEpoch}',
         'data': base64Encode(chunkData),
         'chunk_size': chunkData.length,
         'is_last_chunk': chunkIndex == transfer.totalChunks - 1,
@@ -177,13 +178,10 @@ class _FileshareState extends State<Fileshare> {
         'timestamp': DateTime.now().toIso8601String(),
       };
 
-      print('🔄 Retrying chunk $chunkIndex/${transfer.totalChunks} for $filename (attempt ${transfer.getRetryCount(chunkIndex) + 1})');
       WebSocketManager.instance.sendMessage(chunkMessage);
-
       transfer.markChunkAsRetry(chunkIndex);
 
     } catch (e) {
-      print('Error retrying chunk $chunkIndex: $e');
       transfer.markChunkAsError(chunkIndex);
     }
   }
@@ -192,21 +190,16 @@ class _FileshareState extends State<Fileshare> {
     setState(() {
       int targetIndex = _fileTransferStatus.indexWhere((f) => f.filename == filename);
       if (targetIndex >= 0) {
-        final progress = transfer.getProgress();
-        _fileTransferStatus[targetIndex].progress = progress;
+        _fileTransferStatus[targetIndex].progress = transfer.getProgress();
         _fileTransferStatus[targetIndex].transferSpeed = transfer.getTransferSpeed();
         _fileTransferStatus[targetIndex].eta = transfer.getETA();
-
-        // Update bytes transferred
         _fileTransferStatus[targetIndex].bytesTransferred = transfer.getBytesTransferred();
       }
     });
   }
 
   Future<void> _pickFiles() async {
-    final result = await FilePicker.platform.pickFiles(
-      allowMultiple: true,
-    );
+    final result = await FilePicker.platform.pickFiles(allowMultiple: true);
 
     if (result != null) {
       setState(() {
@@ -215,7 +208,6 @@ class _FileshareState extends State<Fileshare> {
             .map((path) => File(path!))
             .toList();
 
-        // Initialize transfer status for each file
         _fileTransferStatus = _selectedFiles.map((file) {
           final fileStats = file.statSync();
           return FileTransferStatus(
@@ -229,9 +221,9 @@ class _FileshareState extends State<Fileshare> {
           );
         }).toList();
 
-        // Clear completed transfers when new files are selected
         _completedTransfers.clear();
         _activeTransfers.clear();
+        _transferSpeeds.clear();
       });
     }
   }
@@ -249,17 +241,11 @@ class _FileshareState extends State<Fileshare> {
     });
 
     try {
-      // Send files one by one
-      for (int i = 0; i < _selectedFiles.length; i++) {
-        if (!WebSocketManager.instance.isConnected) {
-          _handleConnectionLost();
-          break;
-        }
-
-        await _sendSingleFileChunked(i);
-      }
+      // Start all files simultaneously (each will manage its own chunks)
+      await Future.wait(_selectedFiles.asMap().entries.map((entry) {
+        return _sendSingleFileChunked(entry.key);
+      }));
     } catch (e) {
-      print('Error during file transfer: $e');
       _showErrorSnackBar('Error during file transfer: $e');
     } finally {
       setState(() {
@@ -285,37 +271,71 @@ class _FileshareState extends State<Fileshare> {
         _fileTransferStatus[progressIndex].startTime = DateTime.now();
       });
 
-      // Create chunked transfer
+      // Determine optimal chunk size based on file size
+      int chunkSize = _determineOptimalChunkSize(fileSize);
+
       final transfer = ChunkedTransfer(
         file: file,
         filename: filename,
         fileSize: fileSize,
         fileHash: fileHash,
-        chunkSize: CHUNK_SIZE,
+        chunkSize: chunkSize,
       );
 
       _activeTransfers[filename] = transfer;
 
-      // Send file metadata first
+      // Send file metadata
       await _sendFileMetadata(transfer);
 
-      // Wait a bit for metadata to be processed
-      await Future.delayed(Duration(milliseconds: 100));
-
-      // Start sending chunks
+      // Start sending chunks immediately
       await _sendNextChunks(filename, transfer);
 
-      // Wait for transfer completion or timeout
+      // Wait for completion
       await _waitForTransferCompletion(filename, transfer);
 
     } catch (e) {
-      print('Error sending file $filename: $e');
       setState(() {
         if (progressIndex < _fileTransferStatus.length) {
           _fileTransferStatus[progressIndex].status = TransferStatus.error;
         }
       });
       _activeTransfers.remove(filename);
+      _transferSpeeds.remove(filename);
+    }
+  }
+
+  int _determineOptimalChunkSize(int fileSize) {
+    // Start with base chunk size
+    int chunkSize = BASE_CHUNK_SIZE;
+
+    // Increase chunk size for larger files
+    if (fileSize > 100 * 1024 * 1024) { // > 100MB
+      chunkSize = MAX_CHUNK_SIZE;
+    } else if (fileSize > 10 * 1024 * 1024) { // > 10MB
+      chunkSize = 5 * 1024 * 1024;
+    }
+
+    return chunkSize;
+  }
+
+  int _getAdaptiveChunkSize(String filename) {
+    if (!_transferSpeeds.containsKey(filename) || _transferSpeeds[filename]!.isEmpty) {
+      return BASE_CHUNK_SIZE;
+    }
+
+    // Calculate average speed
+    final speeds = _transferSpeeds[filename]!;
+    final avgSpeed = speeds.reduce((a, b) => a + b) / speeds.length;
+
+    // Adjust chunk size based on speed (aim for 0.1-0.5 second transfer time per chunk)
+    if (avgSpeed > 50 * 1024 * 1024) { // > 50MB/s
+      return MAX_CHUNK_SIZE;
+    } else if (avgSpeed > 10 * 1024 * 1024) { // > 10MB/s
+      return 5 * 1024 * 1024;
+    } else if (avgSpeed > 1 * 1024 * 1024) { // > 1MB/s
+      return 1 * 1024 * 1024;
+    } else {
+      return MIN_CHUNK_SIZE;
     }
   }
 
@@ -332,20 +352,17 @@ class _FileshareState extends State<Fileshare> {
       'timestamp': DateTime.now().toIso8601String(),
     };
 
-    print('📤 Sending metadata for ${transfer.filename}: ${transfer.totalChunks} chunks');
     WebSocketManager.instance.sendMessage(metadata);
   }
 
   Future<void> _sendNextChunks(String filename, ChunkedTransfer transfer) async {
-    final chunksToSend = transfer.getNextChunksToSend(MAX_CONCURRENT_CHUNKS);
+    if (!WebSocketManager.instance.isConnected) return;
 
+    final chunksToSend = transfer.getNextChunksToSend(MAX_CONCURRENT_CHUNKS);
     if (chunksToSend.isEmpty) return;
 
-    print('📤 Sending ${chunksToSend.length} chunks for $filename');
-
-    for (final chunkIndex in chunksToSend) {
-      if (!WebSocketManager.instance.isConnected) break;
-
+    // Send chunks in parallel
+    await Future.wait(chunksToSend.map((chunkIndex) async {
       try {
         final chunkData = await transfer.getChunkData(chunkIndex);
         final chunkMessage = {
@@ -361,19 +378,13 @@ class _FileshareState extends State<Fileshare> {
           'timestamp': DateTime.now().toIso8601String(),
         };
 
-        print('📤 Sending chunk $chunkIndex/${transfer.totalChunks} for $filename (${chunkData.length} bytes)');
         WebSocketManager.instance.sendMessage(chunkMessage);
-
         transfer.markChunkAsSent(chunkIndex);
 
-        // Small delay between chunks to avoid overwhelming the connection
-        await Future.delayed(Duration(milliseconds: 50));
-
       } catch (e) {
-        print('Error sending chunk $chunkIndex: $e');
         transfer.markChunkAsError(chunkIndex);
       }
-    }
+    }));
   }
 
   Future<void> _waitForTransferCompletion(String filename, ChunkedTransfer transfer) async {
@@ -381,18 +392,14 @@ class _FileshareState extends State<Fileshare> {
     Timer? timeoutTimer;
     Timer? progressTimer;
 
-    // Set up timeout (10 minutes for large files)
-    timeoutTimer = Timer(Duration(minutes: 10), () {
+    timeoutTimer = Timer(Duration(minutes: 5), () {
       if (!completer.isCompleted) {
-        print('⏰ Transfer timeout for $filename');
         _markTransferAsFailed(filename, 'Transfer timeout');
         completer.completeError('Transfer timeout');
       }
     });
 
-    // Monitor transfer progress more frequently
-    // In your _waitForTransferCompletion method, replace the monitoring logic:
-    progressTimer = Timer.periodic(Duration(milliseconds: 500), (timer) { // Increased interval
+    progressTimer = Timer.periodic(Duration(milliseconds: 200), (timer) {
       if (completer.isCompleted) {
         timer.cancel();
         return;
@@ -407,27 +414,20 @@ class _FileshareState extends State<Fileshare> {
         return;
       }
 
-      // Log transfer stats for debugging
-      final stats = transfer.getTransferStats();
-      print('📊 Transfer stats for $filename: $stats');
-
       if (transfer.isCompleted()) {
-        print('✅ Transfer completed for $filename');
         timeoutTimer?.cancel();
         timer.cancel();
         if (!completer.isCompleted) {
           completer.complete();
         }
       } else if (transfer.hasFailed()) {
-        print('❌ Transfer failed for $filename');
         timeoutTimer?.cancel();
         timer.cancel();
         if (!completer.isCompleted) {
-          _markTransferAsFailed(filename, 'Too many chunk failures');
+          _markTransferAsFailed(filename, 'Transfer failed');
           completer.completeError('Transfer failed');
         }
       } else if (transfer.hasMoreChunksToSend()) {
-        // Continue sending chunks if there are more to send
         _sendNextChunks(filename, transfer);
       }
     });
@@ -461,12 +461,11 @@ class _FileshareState extends State<Fileshare> {
     //   SnackBar(
     //     content: Text(message),
     //     backgroundColor: Colors.red,
-    //     duration: Duration(seconds: 5),
+    //     duration: Duration(seconds: 3),
     //   ),
     // );
   }
 
-  // Retry single file transfer
   Future<void> _retrySingleFile(int index) async {
     if (!WebSocketManager.instance.isConnected) {
       _showErrorSnackBar('Not connected to server');
@@ -481,7 +480,6 @@ class _FileshareState extends State<Fileshare> {
       _fileTransferStatus[index].eta = Duration.zero;
     });
 
-    // Find the original file index
     String filename = _fileTransferStatus[index].filename;
     int originalIndex = _selectedFiles.indexWhere((file) => basename(file.path) == filename);
 
@@ -495,6 +493,7 @@ class _FileshareState extends State<Fileshare> {
     _fileAckSubscription?.cancel();
     _connectionSubscription?.cancel();
     _activeTransfers.clear();
+    _transferSpeeds.clear();
     super.dispose();
   }
 
@@ -514,7 +513,6 @@ class _FileshareState extends State<Fileshare> {
         ),
         body: Column(
           children: [
-            // Top: File Picker and Controls
             Padding(
               padding: const EdgeInsets.all(12.0),
               child: Column(
@@ -616,14 +614,10 @@ class _FileshareState extends State<Fileshare> {
                 ],
               ),
             ),
-
-            // Bottom: Tab Views
             Expanded(
               child: TabBarView(
                 children: [
-                  // Progress Tab
                   _buildProgressTab(),
-                  // Completed Tab
                   _buildCompletedTab(),
                 ],
               ),
@@ -803,7 +797,6 @@ class _FileshareState extends State<Fileshare> {
   }
 }
 
-// Enhanced file transfer status class
 class FileTransferStatus {
   final String filename;
   TransferStatus status;
@@ -833,7 +826,6 @@ enum TransferStatus {
   error,
 }
 
-// Enhanced chunked transfer management class
 class ChunkedTransfer {
   final File file;
   final String filename;
@@ -845,13 +837,13 @@ class ChunkedTransfer {
   final Set<int> _sentChunks = {};
   final Set<int> _acknowledgedChunks = {};
   final Set<int> _errorChunks = {};
-  final Map<int, int> _chunkRetryCount = {}; // Track retry count per chunk
+  final Map<int, int> _chunkRetryCount = {};
 
   DateTime? _transferStart;
   DateTime? _lastProgressUpdate;
   int _lastBytesTransferred = 0;
-
-  static const int MAX_RETRIES = 3;
+  List<double> _speedSamples = [];
+  static const int MAX_RETRIES = 2;
 
   ChunkedTransfer({
     required this.file,
@@ -865,7 +857,6 @@ class ChunkedTransfer {
     final chunksToSend = <int>[];
 
     for (int i = 0; i < totalChunks && chunksToSend.length < maxChunks; i++) {
-      // Only send chunks that haven't been sent or acknowledged, and haven't failed permanently
       if (!_sentChunks.contains(i) &&
           !_acknowledgedChunks.contains(i) &&
           !_errorChunks.contains(i)) {
@@ -876,7 +867,6 @@ class ChunkedTransfer {
     return chunksToSend;
   }
 
-// ===========================================================
   Future<Uint8List> getChunkData(int chunkIndex) async {
     final start = chunkIndex * chunkSize;
     final end = (start + chunkSize > fileSize) ? fileSize : start + chunkSize;
@@ -896,7 +886,6 @@ class ChunkedTransfer {
 
   void markChunkAsError(int chunkIndex) {
     _sentChunks.remove(chunkIndex);
-    // Don't add to _errorChunks immediately - let retry logic handle it
   }
 
   void markChunkAsRetry(int chunkIndex) {
@@ -917,16 +906,11 @@ class ChunkedTransfer {
     if (success) {
       _acknowledgedChunks.add(chunkIndex);
       _errorChunks.remove(chunkIndex);
-      _chunkRetryCount.remove(chunkIndex); // Clear retry count on success
-      print('✅ Chunk $chunkIndex acknowledged (${_acknowledgedChunks.length}/${totalChunks})');
+      _chunkRetryCount.remove(chunkIndex);
     } else {
       _sentChunks.remove(chunkIndex);
-      // Only mark as permanently failed if we've exceeded retry limit
       if (!shouldRetryChunk(chunkIndex)) {
         _errorChunks.add(chunkIndex);
-        print('❌ Chunk $chunkIndex permanently failed after ${getRetryCount(chunkIndex)} retries');
-      } else {
-        print('⚠️ Chunk $chunkIndex failed, will retry (attempt ${getRetryCount(chunkIndex) + 1}/${MAX_RETRIES})');
       }
     }
   }
@@ -948,7 +932,15 @@ class ChunkedTransfer {
     final bytesTransferred = getBytesTransferred();
 
     if (duration.inSeconds > 0) {
-      return bytesTransferred / duration.inSeconds;
+      final speed = bytesTransferred / duration.inSeconds;
+
+      // Maintain a running average of the last few speed samples
+      _speedSamples.add(speed);
+      if (_speedSamples.length > 5) {
+        _speedSamples.removeAt(0);
+      }
+
+      return _speedSamples.reduce((a, b) => a + b) / _speedSamples.length;
     }
     return 0.0;
   }
@@ -964,27 +956,14 @@ class ChunkedTransfer {
   }
 
   bool isCompleted() {
-    final isComplete = _acknowledgedChunks.length == totalChunks;
-    if (isComplete) {
-      print('🎉 Transfer completed: ${_acknowledgedChunks.length}/${totalChunks} chunks acknowledged');
-    }
-    return isComplete;
+    return _acknowledgedChunks.length == totalChunks;
   }
 
   bool hasFailed() {
-    // More conservative failure detection
-    final failedChunks = _errorChunks.length;
-    final totalFailed = failedChunks > (totalChunks * 0.3); // 30% failure threshold
-
-    if (totalFailed) {
-      print('💥 Transfer failed: $failedChunks permanently failed chunks (${(failedChunks/totalChunks*100).toStringAsFixed(1)}%)');
-    }
-
-    return totalFailed;
+    return _errorChunks.length > (totalChunks * 0.3); // 30% failure threshold
   }
 
   bool hasMoreChunksToSend() {
-    // Check if there are chunks that need to be sent or retried
     for (int i = 0; i < totalChunks; i++) {
       if (!_acknowledgedChunks.contains(i) && !_errorChunks.contains(i)) {
         return true;
@@ -992,17 +971,4 @@ class ChunkedTransfer {
     }
     return false;
   }
-
-// Add method to get transfer statistics
-  Map<String, dynamic> getTransferStats() {
-    return {
-      'total_chunks': totalChunks,
-      'acknowledged': _acknowledgedChunks.length,
-      'sent': _sentChunks.length,
-      'error': _errorChunks.length,
-      'pending': totalChunks - _acknowledgedChunks.length - _errorChunks.length,
-      'progress': getProgress(),
-      'bytes_transferred': getBytesTransferred(),
-      'transfer_speed': getTransferSpeed(),
-    };
-  }}
+}

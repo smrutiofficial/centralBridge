@@ -438,29 +438,29 @@ class _DeviceDiscoveryScreenState extends State<DeviceDiscoveryScreen> {
 
         case 'status_response':
           final connected = message['connected'] as bool;
-          if (connected) {
-            final deviceInfo = message['device'] as Map<String, dynamic>?;
-            if (deviceInfo != null) {
-              _stopDiscovery = true;
-              Navigator.pushReplacement(
-                context,
-                MaterialPageRoute(
-                  builder: (context) => DashboardScreen(
-                    serverUrl: message['url'],
-                    deviceInfo: {
-                      'device_name': deviceInfo['device_name'] ?? 'Unknown',
-                      'ip': deviceInfo['ip'] ?? 'Unknown',
-                      'os': 'Unknown',
-                      'cpu': '-',
-                      'ram': '-',
-                      'battery': '-',
-                    },
-                  ),
-                ),
-              );
-            }
-          }
-          break;
+          // if (connected) {
+          //   final deviceInfo = message['device'] as Map<String, dynamic>?;
+            // if (deviceInfo != null) {
+              // _stopDiscovery = true;
+              // Navigator.pushReplacement(
+                // context,
+                // MaterialPageRoute(
+                //   builder: (context) => DashboardScreen(
+                //     serverUrl: message['url'],
+                //     deviceInfo: {
+                //       'device_name': deviceInfo['device_name'] ?? 'Unknown',
+                //       'ip': deviceInfo['ip'] ?? 'Unknown',
+                //       'os': 'Unknown',
+                //       'cpu': '-',
+                //       'ram': '-',
+                //       'battery': '-',
+                //     },
+                //   ),
+                // ),
+              // );
+            // }
+          // }
+          // break;
       }
     });
   }
